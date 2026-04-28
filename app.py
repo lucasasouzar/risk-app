@@ -122,7 +122,10 @@ if "driver" not in st.session_state:
     st.session_state.driver = generate_random_driver()
 
 def do_randomize():
-    st.session_state.driver = generate_random_driver()
+    new_driver = generate_random_driver()
+    st.session_state.driver = new_driver
+    for k, v in new_driver.items():
+        st.session_state[f"field_{k}"] = v
 
 driver = st.session_state.driver
 
