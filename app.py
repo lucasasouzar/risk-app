@@ -2,7 +2,7 @@ import warnings
 warnings.filterwarnings("ignore", message="ntree_limit is deprecated.*", category=UserWarning)
 
 import streamlit as st
-import plotly.graph_objects as go
+import math
 from model import (
     load_model, predict, generate_random_driver,
     get_insights, get_actionables, format_value,
@@ -431,83 +431,87 @@ with st.container():
     st.markdown(panel(risk_content, left_accent=risk_color), unsafe_allow_html=True)
     st.markdown("<div style='height:4px'/>", unsafe_allow_html=True)
 
-    # ── 03 · SHAP WATERFALL ────────────────────────────────────
-    features  = [FEATURE_LABELS[k] for k, _ in sorted_contribs]
-    values    = [v for _, v in sorted_contribs]
-    sub_vals  = [format_value(k, driver[k]) for k, _ in sorted_contribs]
-    y_labels  = [f"{f}  <span style='color:#6b6f7a;font-size:10px'>{s}</span>"
-                 for f, s in zip(features, sub_vals)]
-    colors    = ["#c9483b" if v > 0 else "#84a98c" for v in values]
-    text_vals = [f"{'+'if v>0 else ''}{v:.3f}" for v in values]
+    # ── 03 · SHAP WATERFALL (HTML, idêntico ao JSX) ───────────────
+    def _wf_base_row(label, value, sublabel, is_final=False):
+        sign   = "+" if value > 0 else ""
+        color  = "#c9a572" if is_final else "#6b6f7a"
+        bg     = "#1f2330" if is_final else "#171a23"
+        mono   = "font-family:'JetBrains Mono',monospace;"
+        return (
+            f'<div style="display:flex;flex-direction:column;gap:4px;padding:12px 14px;'
+            f'margin:6px 0;background:{bg};border-radius:4px;'
+            f'border-left:2px solid {color};width:100%">'
+            f'<div style="display:flex;justify-content:space-between;align-items:baseline;'
+            f'gap:8px;flex-wrap:wrap">'
+            f'<div style="font-size:13px;color:#e8e6e1;font-weight:500">{label}</div>'
+            f'<div style="{mono}font-size:13px;color:{color};white-space:nowrap">'
+            f'{sign}{value:.3f}</div></div>'
+            f'<div style="{mono}font-size:10px;color:#6b6f7a">{sublabel}</div>'
+            f'</div>'
+        )
 
-    max_abs = max(abs(v) for v in values) if values else 1
-    bar_widths = [abs(v) for v in values]
-    bar_bases  = [0 if v >= 0 else v for v in values]
+    def _wf_contrib_row(label, value, sublabel, max_abs):
+        is_pos   = value > 0
+        fill_pct = min(50, (abs(value) / max_abs) * 50)
+        color    = "#c9483b" if is_pos else "#84a98c"
+        sign     = "+" if is_pos else ""
+        mono     = "font-family:'JetBrains Mono',monospace;"
+        if is_pos:
+            bar = (f'position:absolute;left:50%;width:{fill_pct:.2f}%;top:2px;bottom:2px;'
+                   f'background:linear-gradient(90deg,{color}88,{color});border-radius:2px')
+        else:
+            bar = (f'position:absolute;left:{50-fill_pct:.2f}%;width:{fill_pct:.2f}%;top:2px;bottom:2px;'
+                   f'background:linear-gradient(90deg,{color},{color}88);border-radius:2px')
+        return (
+            f'<div style="display:flex;flex-direction:column;gap:8px;padding:12px 4px;'
+            f'border-bottom:1px solid #1f2330;width:100%">'
+            f'<div style="display:flex;justify-content:space-between;align-items:baseline;'
+            f'gap:12px;flex-wrap:wrap">'
+            f'<div style="min-width:0;flex:1 1 auto">'
+            f'<div style="font-size:13px;color:#e8e6e1;line-height:1.3">{label}</div>'
+            f'<div style="{mono}font-size:10px;color:#6b6f7a;margin-top:2px;word-break:break-word">'
+            f'{sublabel}</div></div>'
+            f'<div style="{mono}font-size:13px;color:{color};font-weight:500;white-space:nowrap">'
+            f'{sign}{value:.3f}</div></div>'
+            f'<div style="position:relative;height:14px;width:100%;background:#13161e;'
+            f'border-radius:2px;overflow:hidden">'
+            f'<div style="position:absolute;left:50%;top:0;bottom:0;width:1px;background:#2a2e3a"></div>'
+            f'<div style="{bar}"></div>'
+            f'</div></div>'
+        )
 
-    fig = go.Figure()
-    fig.add_trace(go.Bar(
-        y=features[::-1],
-        x=values[::-1],
-        orientation="h",
-        marker_color=colors[::-1],
-        marker_line_width=0,
-        text=text_vals[::-1],
-        textposition="outside",
-        textfont=dict(family="JetBrains Mono, monospace", size=12,
-                      color=["#c9483b" if v > 0 else "#84a98c" for v in values[::-1]]),
-        customdata=sub_vals[::-1],
-        hovertemplate="<b>%{y}</b><br>Value: %{customdata}<br>SHAP: %{x:.4f}<extra></extra>",
-    ))
-    fig.add_vline(x=0, line_color="#2a2e3a", line_width=1)
-    fig.add_annotation(
-        x=base_val, y=1.12, yref="paper",
-        text=f"base = {base_val:.3f}", showarrow=False,
-        font=dict(size=10, color="#6b6f7a", family="JetBrains Mono, monospace"),
-        xanchor="center",
+    max_abs     = max((abs(v) for _, v in sorted_contribs), default=0.5)
+    max_abs     = max(max_abs, 0.5)
+    final_logit = base_val + sum(v for _, v in sorted_contribs)
+    sigma_base  = 1 / (1 + math.exp(-base_val))
+    sigma_final = 1 / (1 + math.exp(-final_logit))
+
+    wf_rows = _wf_base_row(
+        "E[f(x)] · base", base_val,
+        f"model intercept · σ = {sigma_base:.3f}"
     )
-    if abs(base_val) > 0.05:
-        fig.add_vline(x=base_val, line_color="#6b6f7a", line_dash="dot", line_width=1)
-
-    fig.update_layout(
-        plot_bgcolor="#151821", paper_bgcolor="#151821",
-        font=dict(color="#e8e6e1", family="inherit"),
-        xaxis=dict(
-            showgrid=True, gridcolor="#1f2330", gridwidth=1,
-            zeroline=True, zerolinecolor="#2a2e3a", zerolinewidth=1,
-            tickfont=dict(family="JetBrains Mono, monospace", size=11, color="#6b6f7a"),
-            title=dict(text="SHAP value (log-odds)", font=dict(size=11, color="#6b6f7a")),
-        ),
-        yaxis=dict(
-            showgrid=False,
-            tickfont=dict(size=12, color="#e8e6e1"),
-            automargin=True,
-        ),
-        margin=dict(l=220, r=90, t=55, b=30),
-        height=360,
-        showlegend=False,
+    for key, value in sorted_contribs:
+        wf_rows += _wf_contrib_row(
+            FEATURE_LABELS[key], value,
+            format_value(key, driver[key]), max_abs
+        )
+    wf_rows += _wf_base_row(
+        "f(x) · final score", final_logit,
+        f"σ(f(x)) = {sigma_final:.3f}", is_final=True
     )
 
     waterfall_desc = (
         f"Each feature contributes by shifting the prediction away from "
         f"<span style=\"font-family:'JetBrains Mono',monospace\">E[f(x)] = {base_val:.3f}</span> "
-        f"(model intercept in log-odds space; σ({base_val:.3f}) = {1/(1+__import__('math').exp(-base_val)):.1%}). "
+        f"(model intercept in log-odds space; σ({base_val:.3f}) = {sigma_base:.1%}). "
         f"Bars to the right increase risk; bars to the left decrease it."
     )
     wf_content = (
         panel_title("03 · SHAP Decomposition · Waterfall")
         + f'<div style="font-size:12px;color:#888c96;margin-bottom:18px;line-height:1.6">{waterfall_desc}</div>'
+        + f'<div style="display:flex;flex-direction:column;width:100%;max-width:100%">{wf_rows}</div>'
     )
     st.markdown(panel(wf_content), unsafe_allow_html=True)
-    # plotly rendered outside the panel div (Streamlit limitation)
-    with st.container():
-        st.markdown(
-            '<div style="background:#151821;border:1px solid #232733;'
-            'border-top:none;border-radius:0 0 6px 6px;padding:4px 16px 16px">',
-            unsafe_allow_html=True,
-        )
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-        st.markdown("</div>", unsafe_allow_html=True)
-
     st.markdown("<div style='height:4px'/>", unsafe_allow_html=True)
 
     # ── 04 · INSIGHTS ──────────────────────────────────────────
